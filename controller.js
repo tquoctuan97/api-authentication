@@ -15,56 +15,76 @@ const writeDatabase = (data) => {
 }
 
 export const loginController = async (req) => {
-  const body = req.body
-  const { username, password } = body
+  const { username, password } = req.body
+
   const database = getDatabase()
   const isAccountExist = database.users.some(
     (user) => user.username === username && user.password === password
   )
 
-  if (isAccountExist) {
-    const accessToken$ = signToken(
-      {
-        username,
-        tokenType: tokenType.accessToken
-      },
-      config.jwt_expire_access_token
-    )
-    const refreshToken$ = signToken(
-      {
-        username,
-        tokenType: tokenType.refreshToken
-      },
-      config.jwt_expire_refresh_token
-    )
-    const [access_token, refresh_token] = await Promise.all([
-      accessToken$,
-      refreshToken$
-    ])
-    database.access_tokens.push({
-      username,
-      token: access_token
-    })
-    database.refresh_tokens.push({
-      username,
-      token: refresh_token
-    })
-    writeDatabase(database)
+  if(!isAccountExist) {
     return {
-      status: STATUS.OK,
+      status: STATUS.UNAUTHORIZED,
       response: {
-        message: 'Đăng nhập thành công',
-        data: {
-          access_token,
-          refresh_token
-        }
+        message: 'username hoặc password không đúng!'
       }
     }
   }
+
+  const accessToken$ = signToken(
+    {
+      username,
+      tokenType: tokenType.accessToken
+    },
+    config.jwt_expire_access_token
+  )
+  const refreshToken$ = signToken(
+    {
+      username,
+      tokenType: tokenType.refreshToken
+    },
+    config.jwt_expire_refresh_token
+  )
+
+  const [access_token, refresh_token] = await Promise.all([
+    accessToken$,
+    refreshToken$
+  ])
+
+  database.refresh_tokens.push({
+    username,
+    token: refresh_token
+  })
+
+  writeDatabase(database)
+
   return {
-    status: STATUS.UNAUTHORIZED,
+    status: STATUS.OK,
     response: {
-      message: 'username hoặc password không đúng!'
+      message: 'Đăng nhập thành công',
+      data: {
+        access_token,
+        refresh_token
+      }
+    }
+  }
+}
+
+export const logoutController = async (req) => {
+  const database = getDatabase()
+
+  const newRefreshTokenList = database.refresh_tokens.filter(
+    (refreshTokenObject) => refreshTokenObject.username !== req.username
+  )
+
+  database.refresh_tokens = newRefreshTokenList;
+
+  writeDatabase(database)
+
+  return {
+    status: STATUS.OK,
+    response: {
+      message: 'Đăng xuất thành công',
     }
   }
 }
@@ -77,6 +97,7 @@ export const refreshTokenController = async (req) => {
       tokenType.refreshToken
     )
     const { username } = decodedRefreshToken
+
     const database = getDatabase()
     const isAccountExist = database.users.some(
       (user) => user.username === username
@@ -85,85 +106,89 @@ export const refreshTokenController = async (req) => {
       (refreshTokenObject) => refreshTokenObject.token === refresh_token
     )
 
-    if (isAccountExist && isRefreshTokenExist) {
-      const access_token = await signToken(
-        {
-          username,
-          tokenType: tokenType.accessToken
-        },
-        config.jwt_expire_access_token
-      )
-      database.access_tokens.push({
-        username,
-        token: access_token
-      })
-      writeDatabase(database)
+    if(!isAccountExist || !isRefreshTokenExist) {
       return {
-        status: STATUS.OK,
-        response: {
-          message: 'Refresh Token thành công',
-          data: { access_token }
-        }
+        status: STATUS.NOT_FOUND,
+        response: { message: 'Refresh Token không tồn tại' }
       }
     }
+
+    // Delete old refresh token
+    const indexToRemove = database.refresh_tokens.findIndex(
+      (refreshTokenObject) => refreshTokenObject.token === refresh_token
+    )
+
+    database.refresh_tokens.splice(indexToRemove, 1);
+
+
+    // Generate new access token and refresh token
+    
+    const accessToken$ = signToken(
+      {
+        username,
+        tokenType: tokenType.accessToken
+      },
+      config.jwt_expire_access_token
+    )
+
+    const refreshToken$ = signToken(
+      {
+        username,
+        tokenType: tokenType.refreshToken
+      },
+      config.jwt_expire_refresh_token
+    )
+  
+    const [newAccessToken, newRefreshToken] = await Promise.all([
+      accessToken$,
+      refreshToken$
+    ])
+
+    database.refresh_tokens.push({
+      username,
+      token: newRefreshToken
+    })
+
+    writeDatabase(database)
+
     return {
-      status: STATUS.NOT_FOUND,
-      response: { message: 'Refresh Token không tồn tại' }
+      status: STATUS.OK,
+      response: {
+        message: 'Refresh Token thành công',
+        data: { access_token: newAccessToken, refresh_token: newRefreshToken}
+      }
     }
+   
   } catch (error) {
     return { ...error, response: error.error }
   }
 }
 
 export const getProfileController = async (req) => {
-  const access_token = req.headers.authorization?.replace('Bearer ', '')
-  try {
-    const decodedAccessToken = await verifyToken(access_token)
-    const { username } = decodedAccessToken
-    const database = getDatabase()
-    const account = database.users.find((user) => user.username === username)
-    const isAccessTokenExist = database.access_tokens.some(
-      (accessTokenObject) => accessTokenObject.token === access_token
-    )
-    if (account && isAccessTokenExist) {
-      return {
-        status: STATUS.OK,
-        response: { message: 'Lấy thông tin profile thành công', data: account }
-      }
-    }
+  const database = getDatabase()
+  const account = database.users.find((user) => user.username === req.username)
+
+  if(!account) {
     return {
       status: STATUS.NOT_FOUND,
       response: { message: 'Không tồn tại user' }
     }
-  } catch (error) {
-    return { ...error, response: error.error }
+  }
+
+  return {
+    status: STATUS.OK,
+    response: { message: 'Lấy thông tin profile thành công', data: account }
   }
 }
 
 export const getProductsController = async (req) => {
-  const access_token = req.headers.authorization?.replace('Bearer ', '')
-  try {
-    const decodedAccessToken = await verifyToken(access_token)
-    const { username } = decodedAccessToken
-    const database = getDatabase()
-    const account = database.users.find((user) => user.username === username)
-    const isAccessTokenExist = database.access_tokens.some(
-      (accessTokenObject) => accessTokenObject.token === access_token
-    )
-    if (account && isAccessTokenExist) {
-      return {
-        status: STATUS.OK,
-        response: {
-          message: 'Lấy danh sách sản phẩm thành công',
-          data: database.products
-        }
-      }
+  const database = getDatabase()
+
+  return {
+    status: STATUS.OK,
+    response: {
+      message: 'Lấy danh sách sản phẩm thành công',
+      data: database.products
     }
-    return {
-      status: STATUS.NOT_FOUND,
-      response: { message: 'Không tồn tại user' }
-    }
-  } catch (error) {
-    return { ...error, response: error.error }
   }
 }
