@@ -34,3 +34,4 @@ app.listen(config.port, () => {
 });
 
 console.log("test");
+console.log("test2");
